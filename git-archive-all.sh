@@ -49,6 +49,7 @@ IFS='
 
 function cleanup () {
     rm -f $TMPFILE
+    rm -f $ACCUM
     rm -f $TOARCHIVE
     IFS="$OLD_IFS"
 }
@@ -72,17 +73,6 @@ function usage () {
     echo
     echo "    If '--prefix' is specified, the archive's superproject and all submodules"
     echo "    are created with the <path> prefix named. The default is to not use one."
-    echo
-    echo "    If '--separate' or '-s' is specified, individual archives will be created"
-    echo "    for each of the superproject itself and its submodules. The default is to"
-    echo "    concatenate individual archives into one larger archive."
-    echo
-    echo "    If 'output_file' is specified, the resulting archive is created as the"
-    echo "    file named. This parameter is essentially a path that must be writeable."
-    echo "    When combined with '--separate' ('-s') this path must refer to a directory."
-    echo "    Without this parameter or when combined with '--separate' the resulting"
-    echo "    archive(s) are named with a dot-separated path of the archived directory and"
-    echo "    a file extension equal to their format (e.g., 'superdir.submodule1dir.tar')."
 }
 
 function version () {
@@ -95,10 +85,9 @@ readonly VERSION=0.2
 
 OLD_PWD="`pwd`"
 TMPDIR=${TMPDIR:-/tmp}
+ACCUM=`mktemp "$TMPDIR/accumulation.XXXXX"` # Create a place to make a super-tar
 TMPFILE=`mktemp "$TMPDIR/$PROGRAM.XXXXXX"` # Create a place to store our work's progress
 TOARCHIVE=`mktemp "$TMPDIR/$PROGRAM.toarchive.XXXXXX"`
-OUT_FILE=$OLD_PWD # assume "this directory" without a name change by default
-SEPARATE=0
 
 FORMAT=tar
 PREFIX=
@@ -123,11 +112,6 @@ while test $# -gt 0; do
             shift
             ;;
 
-        --separate | -s )
-            shift
-            SEPARATE=1
-            ;;
-
         --version )
             version
             exit
@@ -150,25 +134,15 @@ while test $# -gt 0; do
     esac
 done
 
-if [ ! -z "$1" ]; then
-    OUT_FILE="$1"
-    shift
-fi
-
 # Validate parameters; error early, error often.
-if [ $SEPARATE -eq 1 -a ! -d $OUT_FILE ]; then
-    echo "When creating multiple archives, your destination must be a directory."
-    echo "If it's not, you risk being surprised when your files are overwritten."
-    exit
-elif [ `git config -l | grep -q '^core\.bare=false'; echo $?` -ne 0 ]; then
+if [ `git config -l | grep -q '^core\.bare=false'; echo $?` -ne 0 ]; then
     echo "$PROGRAM must be run from a git working copy (i.e., not a bare repository)."
     exit
 fi
 
 # Create the superproject's git archive
-git archive --format=$FORMAT --prefix="$PREFIX" $TREEISH > $TMPDIR/$(basename $(pwd)).$FORMAT
-echo $TMPDIR/$(basename $(pwd)).$FORMAT >| $TMPFILE # clobber on purpose
-superfile=`head -n 1 $TMPFILE`
+git archive --format=$FORMAT --prefix="$PREFIX" $TREEISH >| $ACCUM # why do you make me clobber you?
+echo $ACCUM >| $TMPFILE
 
 # find all '.git' dirs, these show us the remaining to-be-archived dirs
 find . -name '.git' -type d -print | sed -e 's/^\.\///' -e 's/\.git$//' | (grep -v '^$' || echo -n) >> $TOARCHIVE
@@ -177,32 +151,29 @@ while read path; do
     TREEISH=$(git submodule | grep "^ .*${path%/} " | cut -d ' ' -f 2) # git submodule does not list trailing slashes in $path
     cd "$path"
     git archive --format=$FORMAT --prefix="${PREFIX}$path" ${TREEISH:-HEAD} > "$TMPDIR"/"$(echo "$path" | sed -e 's/\//./g')"$FORMAT
-    if [ $FORMAT == 'zip' ]; then
-        # delete the empty directory entry; zipped submodules won't unzip if we don't do this
-        zip -d "$(tail -n 1 $TMPFILE)" "${PREFIX}${path%/}" >/dev/null # remove trailing '/'
-    fi
+    ## I don't care two beans for zip!
+    # if [ $FORMAT == 'zip' ]; then
+    #     # delete the empty directory entry; zipped submodules won't unzip if we don't do this
+    #     zip -d "$(tail -n 1 $TMPFILE)" "${PREFIX}${path%/}" >/dev/null # remove trailing '/'
+    # fi
     echo "$TMPDIR"/"$(echo "$path" | sed -e 's/\//./g')"$FORMAT >> $TMPFILE
     cd "$OLD_PWD"
 done < $TOARCHIVE
 
 # Concatenate archives into a super-archive.
-if [ $SEPARATE -eq 0 ]; then
-    if [ $FORMAT == 'tar' ]; then
-        sed -e '1d' $TMPFILE | while read file; do
-            tar --concatenate -f "$superfile" "$file" && rm -f "$file"
-        done
-    elif [ $FORMAT == 'zip' ]; then
-        sed -e '1d' $TMPFILE | while read file; do
-            # zip incorrectly stores the full path, so cd and then grow
-            cd `dirname "$file"`
-            zip -g "$superfile" `basename "$file"` && rm -f "$file"
-        done
-        cd "$OLD_PWD"
-    fi
-
-    echo "$superfile" >| $TMPFILE # clobber on purpose
+if [ $FORMAT == 'tar' ]; then
+    sed -e '1d' $TMPFILE | while read file; do
+        tar --concatenate -f "$ACCUM" "$file" && rm -f "$file"
+    done
+## I don't care two beans for zip!
+# elif [ $FORMAT == 'zip' ]; then
+#     sed -e '1d' $TMPFILE | while read file; do
+#             # zip incorrectly stores the full path, so cd and then grow
+#         cd `dirname "$file"`
+#         zip -g "$superfile" `basename "$file"` && rm -f "$file"
+#     done
+#     cd "$OLD_PWD"
 fi
 
-while read file; do
-    mv "$file" "$OUT_FILE"
-done < $TMPFILE
+tar c $ACCUM
+rm -f $ACCUM
