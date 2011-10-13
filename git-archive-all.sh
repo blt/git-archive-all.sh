@@ -175,5 +175,4 @@ if [ $FORMAT == 'tar' ]; then
 #     cd "$OLD_PWD"
 fi
 
-tar c $ACCUM
-rm -f $ACCUM
+cat $ACCUM
