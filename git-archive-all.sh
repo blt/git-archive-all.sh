@@ -57,22 +57,20 @@ function cleanup () {
 function usage () {
     echo "Usage is as follows:"
     echo
-    echo "$PROGRAM <--version>"
+    echo "$PROGRAM <-v>"
     echo "    Prints the program version number on a line by itself and exits."
     echo
-    echo "$PROGRAM <--usage|--help|-?>"
+    echo "$PROGRAM <-h>"
     echo "    Prints this usage output and exits."
     echo
-    echo "$PROGRAM [--format <fmt>] [--prefix <path>] [--separate|-s] [output_file]"
+    echo "$PROGRAM [-p <prefix_path>] [-c <treeish>]"
     echo "    Creates an archive for the entire git superproject, and its submodules"
     echo "    using the passed parameters, described below."
     echo
-    echo "    If '--format' is specified, the archive is created with the named"
-    echo "    git archiver backend. Obviously, this must be a backend that git archive"
-    echo "    understands. The format defaults to 'tar' if not specified."
-    echo
-    echo "    If '--prefix' is specified, the archive's superproject and all submodules"
+    echo "    If '-p' is specified, the archive's superproject and all submodules"
     echo "    are created with the <path> prefix named. The default is to not use one."
+    echo
+    echo "    If '-c' is specified, the archive is rooted at the TREEISH path given."
 }
 
 function version () {
@@ -90,49 +88,37 @@ TMPFILE=`mktemp "$TMPDIR/$PROGRAM.XXXXXX"` # Create a place to store our work's 
 TOARCHIVE=`mktemp "$TMPDIR/$PROGRAM.toarchive.XXXXXX"`
 
 FORMAT=tar
-PREFIX=
 TREEISH=HEAD
+while getopts "p:c:vh" opt; do
+  case $opt in
+    h)
+      usage
+      exit
+      ;;
+    v)
+      version
+      exit
+      ;;
+    p)
+      PREFIX="$OPTARG"
+      ;;
+    c)
+      TREEISH="$OPTARG"
+      ;;
+    \?)
+      echo "Invalid option: -$OPTARG" >&2
+      exit 1
+      ;;
+    :)
+      echo "Option -$OPTARG requires an argument." >&2
+      exit 1
+      ;;
+  esac
+done
 
 # RETURN VALUES/EXIT STATUS CODES
 readonly E_BAD_OPTION=254
 readonly E_UNKNOWN=255
-
-# Process command-line arguments.
-while test $# -gt 0; do
-    case $1 in
-        --format )
-            shift
-            FORMAT="$1"
-            shift
-            ;;
-
-        --prefix )
-            shift
-            PREFIX="$1"
-            shift
-            ;;
-
-        --version )
-            version
-            exit
-            ;;
-
-        -? | --usage | --help )
-            usage
-            exit
-            ;;
-
-        -* )
-            echo "Unrecognized option: $1" >&2
-            usage
-            exit $E_BAD_OPTION
-            ;;
-
-        * )
-            break
-            ;;
-    esac
-done
 
 # Validate parameters; error early, error often.
 if [ `git config -l | grep -q '^core\.bare=false'; echo $?` -ne 0 ]; then
@@ -151,11 +137,6 @@ while read path; do
     TREEISH=$(git submodule | grep "^ .*${path%/} " | cut -d ' ' -f 2) # git submodule does not list trailing slashes in $path
     cd "$path"
     git archive --format=$FORMAT --prefix="${PREFIX}$path" ${TREEISH:-HEAD} > "$TMPDIR"/"$(echo "$path" | sed -e 's/\//./g')"$FORMAT
-    ## I don't care two beans for zip!
-    # if [ $FORMAT == 'zip' ]; then
-    #     # delete the empty directory entry; zipped submodules won't unzip if we don't do this
-    #     zip -d "$(tail -n 1 $TMPFILE)" "${PREFIX}${path%/}" >/dev/null # remove trailing '/'
-    # fi
     echo "$TMPDIR"/"$(echo "$path" | sed -e 's/\//./g')"$FORMAT >> $TMPFILE
     cd "$OLD_PWD"
 done < $TOARCHIVE
@@ -165,14 +146,6 @@ if [ $FORMAT == 'tar' ]; then
     sed -e '1d' $TMPFILE | while read file; do
         tar --concatenate -f "$ACCUM" "$file" && rm -f "$file"
     done
-## I don't care two beans for zip!
-# elif [ $FORMAT == 'zip' ]; then
-#     sed -e '1d' $TMPFILE | while read file; do
-#             # zip incorrectly stores the full path, so cd and then grow
-#         cd `dirname "$file"`
-#         zip -g "$superfile" `basename "$file"` && rm -f "$file"
-#     done
-#     cd "$OLD_PWD"
 fi
 
 cat $ACCUM
